@@ -1,6 +1,13 @@
 "use client";
 
 import { useState, useMemo } from "react";
+import PizZip from "pizzip";
+import Docxtemplater from "docxtemplater";
+import mammoth from "mammoth";
+import { saveAs } from "file-saver";
+
+// We'll use a dynamic import for html2pdf as it's a client-side only lib
+const loadHtml2Pdf = () => import("html2pdf.js");
 
 const FIELDS = [
   "Description",
@@ -42,8 +49,9 @@ export default function Home() {
     });
   }, [inputText]);
 
-  const descriptions = useMemo(() => parsedData.map(row => row["Description"]), [parsedData]);
   const cash_user = useMemo(() => parsedData.map(row => row["Petty Cash User"]), [parsedData]).at(1)
+  const date = useMemo(() => parsedData.map(row => row["Document Date"]), [parsedData]).at(1)
+  const project_id = useMemo(() => parsedData.map(row => row["Project ID"]), [parsedData]).at(1)
   const amounts = useMemo(() => parsedData.map(row => row["Doc Amount"]), [parsedData]);
   const totalAmount = useMemo(() => {
     return amounts.reduce((sum, val) => {
@@ -54,17 +62,174 @@ export default function Home() {
     }, 0);
   }, [amounts]);
 
-  const handleGenerateVoucher = () => {
-    console.log("--- Generating Voucher ---");
-    console.log("Voucher Number:", voucherNumber);
-    console.log("Position:", position);
-    console.log("Petty Cash User:", cash_user);
-    console.log("Receipt Files:", receiptFiles.map(f => f.name));
-    console.log("Template File:", templateFile?.name || "None");
-    console.log("Descriptions:", descriptions);
-    console.log("Amounts:", amounts);
-    console.log("Total Amount:", totalAmount);
-    console.log("Full Parsed Data:", parsedData);
+  const handleGenerateVoucher = async () => {
+    if (!templateFile) {
+      alert("Please upload a .docx template first!");
+      return;
+    }
+
+    try {
+      // 1. Read the template file
+      const arrayBuffer = await templateFile.arrayBuffer();
+      const zip = new PizZip(arrayBuffer);
+      const doc = new Docxtemplater(zip, {
+        paragraphLoop: true,
+        linebreaks: true,
+      });
+
+      // 2. Prepare data for the template
+      const templateData = {
+        voucherNumber,
+        position,
+        cash_user,
+        date,
+        project_id,
+        total_amount: totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+        items: parsedData.map((item, index) => ({
+          description: item.Description,
+          amount: item["Doc Amount"],
+        }))
+      };
+
+      // 3. Render the template
+      doc.render(templateData);
+
+      // 4. Get the filled DOCX content
+      const out = doc.getZip().generate({
+        type: "blob",
+        mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      });
+
+      // 5. Convert filled DOCX to HTML using mammoth
+      const arrayBufferOut = await out.arrayBuffer();
+      const { value: docHtml } = await mammoth.convertToHtml({ arrayBuffer: arrayBufferOut });
+
+      // Clean up Mammoth plain text elements by injecting style classes
+      const polishedHtml = docHtml
+        .replace(/<p>\s*PETTY CASH VOUCHER\s*<\/p>/gi, '<div class="voucher-title">PETTY CASH VOUCHER</div>')
+        .replace(/<p>\s*Total Amount:/gi, '<p class="total-amount-container">Total Amount:');
+
+      // 6. Create a container for PDF generation with custom layout overrides
+      const pdfContainer = document.createElement("div");
+      pdfContainer.style.padding = "40px";
+      pdfContainer.style.backgroundColor = "white";
+      pdfContainer.innerHTML = `
+        <style>
+          .template-content {
+            font-family: Arial, sans-serif;
+            color: #111;
+          }
+          
+          /* Centered, Bold, and Scaled Title with Bottom Margin */
+          .voucher-title {
+            text-align: center;
+            font-size: 24px;
+            font-weight: bold;
+            letter-spacing: 1px;
+            margin-top: 10px;
+            margin-bottom: 30px;
+            text-transform: uppercase;
+          }
+
+          .template-content table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+          }
+
+          .template-content th, .template-content td {
+            border: 1px solid #000;
+            padding: 10px 12px;
+            text-align: left;
+            vertical-align: middle;
+            font-size: 13px;
+          }
+
+          /* 1. BOLDS TABLE 1 LABELS: Voucher No., Petty Cash User, Date, Position, Project ID */
+          .template-content table:nth-of-type(1) tr td:nth-child(1),
+          .template-content table:nth-of-type(1) tr td:nth-child(3) {
+            font-weight: bold;
+          }
+
+          /* 2. BOLDS TABLE 2 LABELS: Particulars, Amount, Remarks */
+          .template-content table:nth-of-type(2) tr:nth-child(1) td {
+            font-weight: bold;
+            background-color: #f9f9f9; /* Gives the header row a professional light-grey tint */
+          }
+
+          /* Total Amount block styling */
+          .total-amount-container {
+            font-weight: bold;
+            font-size: 14px;
+            margin-top: 25px;
+            margin-bottom: 15px; 
+            display: block;
+          }
+
+          /* 3. GUARANTEES A GAP BELOW TOTAL PRICE: Pushes Table 3 (Signatures) down */
+          .template-content table:nth-of-type(3) {
+            margin-top: 45px !important;
+            clear: both;
+          }
+
+          /* Forces the middle row of the signature table to remain expanded for physical signing */
+          .template-content table:nth-of-type(3) tr:nth-child(2) td {
+            height: 80px; 
+            vertical-align: bottom;
+          }
+        </style>
+
+        <div class="template-content">${polishedHtml}</div>
+        
+        <div style="page-break-before: always; border-top: 2px solid #eee; margin-top: 40px; padding-top: 20px;">
+          <h2 style="text-align: center; color: #333;">Receipts</h2>
+          <div id="receipts-container" style="display: flex; flex-direction: column; gap: 20px; align-items: center;">
+          </div>
+        </div>
+      `;
+
+      // 7. Add receipts to the container
+      const receiptsContainer = pdfContainer.querySelector("#receipts-container");
+      for (const file of receiptFiles) {
+        if (file.type.startsWith("image/")) {
+          const base64 = await new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result);
+            reader.readAsDataURL(file);
+          });
+          const img = document.createElement("img");
+          img.src = base64 as string;
+          img.style.maxWidth = "100%";
+          img.style.maxHeight = "900px";
+          img.style.objectFit = "contain";
+          img.style.marginBottom = "20px";
+          img.style.pageBreakInside = "avoid";
+          receiptsContainer?.appendChild(img);
+        } else if (file.type === "application/pdf") {
+          const p = document.createElement("p");
+          p.innerText = `[PDF Receipt Included: ${file.name}]`;
+          p.style.color = "#666";
+          p.style.fontStyle = "italic";
+          receiptsContainer?.appendChild(p);
+        }
+      }
+
+      // 8. Generate PDF using html2pdf
+      const html2pdf = (await loadHtml2Pdf()).default;
+      const opt = {
+        margin: 0.5,
+        filename: `Voucher_${voucherNumber || "Generated"}.pdf`,
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true },
+        jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' }
+      };
+
+      await html2pdf().set(opt).from(pdfContainer).save();
+
+    } catch (error) {
+      console.error("Error generating voucher:", error);
+      alert("Error generating voucher. Ensure your .docx template uses {placeholder} syntax.");
+    }
   };
 
   return (
