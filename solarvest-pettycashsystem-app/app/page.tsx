@@ -177,6 +177,11 @@ export default function Home() {
             height: 80px; 
             vertical-align: bottom;
           }
+
+          .template-content table:nth-of-type(3) tr:nth-child(3) td {
+            text-align: center; 
+            vertical-align: bottom;
+          }
         </style>
 
         <div class="template-content">${polishedHtml}</div>
