@@ -8,6 +8,11 @@ import { saveAs } from "file-saver";
 
 // We'll use a dynamic import for html2pdf as it's a client-side only lib
 const loadHtml2Pdf = () => import("html2pdf.js");
+const loadPdfJs = async () => {
+    const pdfjs = await import("pdfjs-dist");
+    pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+    return pdfjs;
+};
 
 const FIELDS = [
   "Description",
@@ -209,13 +214,45 @@ export default function Home() {
           img.style.objectFit = "contain";
           img.style.marginBottom = "20px";
           img.style.pageBreakInside = "avoid";
+          
+          // Wait for image to load before proceeding to ensure it's captured in PDF
+          await new Promise((resolve) => {
+            img.onload = resolve;
+            img.onerror = resolve; // Continue even if one fails
+          });
+          
           receiptsContainer?.appendChild(img);
         } else if (file.type === "application/pdf") {
-          const p = document.createElement("p");
-          p.innerText = `[PDF Receipt Included: ${file.name}]`;
-          p.style.color = "#666";
-          p.style.fontStyle = "italic";
-          receiptsContainer?.appendChild(p);
+          try {
+            const pdfjs = await loadPdfJs();
+            const arrayBuffer = await file.arrayBuffer();
+            const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+            
+            for (let i = 1; i <= pdf.numPages; i++) {
+              const page = await pdf.getPage(i);
+              const viewport = page.getViewport({ scale: 1.5 });
+              const canvas = document.createElement("canvas");
+              const context = canvas.getContext("2d");
+              canvas.height = viewport.height;
+              canvas.width = viewport.width;
+              
+              if (context) {
+                // @ts-ignore - Handle version-specific render parameters
+                await page.render({ canvasContext: context, viewport }).promise;
+                const img = document.createElement("img");
+                img.src = canvas.toDataURL("image/jpeg", 0.8);
+                img.style.maxWidth = "100%";
+                img.style.marginBottom = "20px";
+                img.style.pageBreakInside = "avoid";
+                receiptsContainer?.appendChild(img);
+              }
+            }
+          } catch (e) {
+            console.error(`Error rendering PDF ${file.name}:`, e);
+            const p = document.createElement("p");
+            p.innerText = `[Error rendering PDF: ${file.name}]`;
+            receiptsContainer?.appendChild(p);
+          }
         }
       }
 
@@ -224,9 +261,9 @@ export default function Home() {
       const opt = {
         margin: 0.5,
         filename: `Voucher_${voucherNumber || "Generated"}.pdf`,
-        image: { type: 'jpeg', quality: 0.98 },
+        image: { type: 'jpeg' as const, quality: 0.98 },
         html2canvas: { scale: 2, useCORS: true },
-        jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' }
+        jsPDF: { unit: 'in' as const, format: 'letter' as const, orientation: 'portrait' as const }
       };
 
       await html2pdf().set(opt).from(pdfContainer).save();
@@ -279,12 +316,12 @@ export default function Home() {
 
         <div>
           <label className="block text-sm font-semibold text-gray-700 mb-2">
-            Receipt Upload (PDFs)
+            Receipt Upload (Images/PDFs)
           </label>
           <div className="relative">
             <input
               type="file"
-              accept=".pdf"
+              accept="image/*,.pdf"
               multiple
               className="hidden"
               id="receipt-upload"
