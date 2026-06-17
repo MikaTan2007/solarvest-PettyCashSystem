@@ -54,9 +54,9 @@ export default function Home() {
     });
   }, [inputText]);
 
-  const cash_user = useMemo(() => parsedData.map(row => row["Petty Cash User"]), [parsedData]).at(1)
-  const date = useMemo(() => parsedData.map(row => row["Document Date"]), [parsedData]).at(1)
-  const project_id = useMemo(() => parsedData.map(row => row["Project ID"]), [parsedData]).at(1)
+  const cash_user = useMemo(() => parsedData.map(row => row["Petty Cash User"])[0] || "", [parsedData]);
+  const date = useMemo(() => parsedData.map(row => row["Document Date"])[0] || "", [parsedData]);
+  const project_id = useMemo(() => parsedData.map(row => row["Project ID"])[0] || "", [parsedData]);
   const amounts = useMemo(() => parsedData.map(row => row["Doc Amount"]), [parsedData]);
   const totalAmount = useMemo(() => {
     return amounts.reduce((sum, val) => {
@@ -116,13 +116,13 @@ export default function Home() {
 
       // 6. Create a container for PDF generation with custom layout overrides
       const pdfContainer = document.createElement("div");
-      pdfContainer.style.padding = "40px";
       pdfContainer.style.backgroundColor = "white";
       pdfContainer.innerHTML = `
         <style>
           .template-content {
             font-family: Arial, sans-serif;
             color: #111;
+            padding: 0px; /* Reset padding here */
           }
           
           /* Centered, Bold, and Scaled Title with Bottom Margin */
@@ -190,68 +190,71 @@ export default function Home() {
         </style>
 
         <div class="template-content">${polishedHtml}</div>
-        
-        <div style="page-break-before: always; border-top: 2px solid #eee; margin-top: 40px; padding-top: 20px;">
-          <h2 style="text-align: center; color: #333;">Receipts</h2>
-          <div id="receipts-container" style="display: flex; flex-direction: column; gap: 20px; align-items: center;">
-          </div>
-        </div>
       `;
 
-      // 7. Add receipts to the container
-      const receiptsContainer = pdfContainer.querySelector("#receipts-container");
-      for (const file of receiptFiles) {
-        if (file.type.startsWith("image/")) {
-          const base64 = await new Promise((resolve) => {
-            const reader = new FileReader();
-            reader.onloadend = () => resolve(reader.result);
-            reader.readAsDataURL(file);
-          });
-          const img = document.createElement("img");
-          img.src = base64 as string;
-          img.style.maxWidth = "100%";
-          img.style.maxHeight = "900px";
-          img.style.objectFit = "contain";
-          img.style.marginBottom = "20px";
-          img.style.pageBreakInside = "avoid";
-          
-          // Wait for image to load before proceeding to ensure it's captured in PDF
-          await new Promise((resolve) => {
-            img.onload = resolve;
-            img.onerror = resolve; // Continue even if one fails
-          });
-          
-          receiptsContainer?.appendChild(img);
-        } else if (file.type === "application/pdf") {
-          try {
-            const pdfjs = await loadPdfJs();
-            const arrayBuffer = await file.arrayBuffer();
-            const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+      // 7. Add receipts section only if files exist
+      if (receiptFiles.length > 0) {
+        const receiptsWrap = document.createElement("div");
+        receiptsWrap.style.pageBreakBefore = "always";
+        receiptsWrap.innerHTML = `
+          <div id="receipts-container" style="display: flex; flex-direction: column; gap: 0px; align-items: center; width: 100%;">
+          </div>
+        `;
+        pdfContainer.appendChild(receiptsWrap);
+
+        const receiptsContainer = receiptsWrap.querySelector("#receipts-container");
+        for (const file of receiptFiles) {
+          if (file.type.startsWith("image/")) {
+            const base64 = await new Promise((resolve) => {
+              const reader = new FileReader();
+              reader.onloadend = () => resolve(reader.result);
+              reader.readAsDataURL(file);
+            });
+            const img = document.createElement("img");
+            img.src = base64 as string;
+            img.style.maxWidth = "100%";
+            img.style.maxHeight = "950px";
+            img.style.objectFit = "contain";
+            img.style.marginBottom = "30px";
+            img.style.pageBreakInside = "avoid";
             
-            for (let i = 1; i <= pdf.numPages; i++) {
-              const page = await pdf.getPage(i);
-              const viewport = page.getViewport({ scale: 1.5 });
-              const canvas = document.createElement("canvas");
-              const context = canvas.getContext("2d");
-              canvas.height = viewport.height;
-              canvas.width = viewport.width;
+            await new Promise((resolve) => {
+              img.onload = resolve;
+              img.onerror = resolve;
+            });
+            
+            receiptsContainer?.appendChild(img);
+          } else if (file.type === "application/pdf") {
+            try {
+              const pdfjs = await loadPdfJs();
+              const arrayBuffer = await file.arrayBuffer();
+              const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
               
-              if (context) {
-                // @ts-ignore - Handle version-specific render parameters
-                await page.render({ canvasContext: context, viewport }).promise;
-                const img = document.createElement("img");
-                img.src = canvas.toDataURL("image/jpeg", 0.8);
-                img.style.maxWidth = "100%";
-                img.style.marginBottom = "20px";
-                img.style.pageBreakInside = "avoid";
-                receiptsContainer?.appendChild(img);
+              for (let i = 1; i <= pdf.numPages; i++) {
+                const page = await pdf.getPage(i);
+                const viewport = page.getViewport({ scale: 1.5 });
+                const canvas = document.createElement("canvas");
+                const context = canvas.getContext("2d");
+                canvas.height = viewport.height;
+                canvas.width = viewport.width;
+                
+                if (context) {
+                  // @ts-ignore
+                  await page.render({ canvasContext: context, viewport }).promise;
+                  const img = document.createElement("img");
+                  img.src = canvas.toDataURL("image/jpeg", 0.8);
+                  img.style.maxWidth = "100%";
+                  img.style.marginBottom = "30px";
+                  img.style.pageBreakInside = "avoid";
+                  receiptsContainer?.appendChild(img);
+                }
               }
+            } catch (e) {
+              console.error(`Error rendering PDF ${file.name}:`, e);
+              const p = document.createElement("p");
+              p.innerText = `[Error rendering PDF: ${file.name}]`;
+              receiptsContainer?.appendChild(p);
             }
-          } catch (e) {
-            console.error(`Error rendering PDF ${file.name}:`, e);
-            const p = document.createElement("p");
-            p.innerText = `[Error rendering PDF: ${file.name}]`;
-            receiptsContainer?.appendChild(p);
           }
         }
       }
@@ -260,13 +263,16 @@ export default function Home() {
       const html2pdf = (await loadHtml2Pdf()).default;
       const opt = {
         margin: 0.5,
-        filename: `Voucher_${voucherNumber || "Generated"}.pdf`,
+        filename: `V${voucherNumber?.trim() || "Generated"}.pdf`,
         image: { type: 'jpeg' as const, quality: 0.98 },
-        html2canvas: { scale: 2, useCORS: true },
+        html2canvas: { scale: 2, useCORS: true, logging: false, scrollY: 0 },
         jsPDF: { unit: 'in' as const, format: 'letter' as const, orientation: 'portrait' as const }
       };
 
-      await html2pdf().set(opt).from(pdfContainer).save();
+      // Set pagebreak options to avoid blank page at the end
+      await html2pdf().set(opt).from(pdfContainer).set({
+        pagebreak: { mode: ['css', 'legacy'] }
+      }).save();
 
     } catch (error) {
       console.error("Error generating voucher:", error);
@@ -288,7 +294,7 @@ export default function Home() {
           <input
             type="text"
             className="w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-2 focus:ring-blue-500 text-black mb-4"
-            placeholder="V1"
+            placeholder="1"
             value={voucherNumber}
             onChange={(e) => setVoucherNumber(e.target.value)}
           />
