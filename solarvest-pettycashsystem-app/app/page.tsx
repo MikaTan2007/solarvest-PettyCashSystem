@@ -272,7 +272,7 @@ export default function Home() {
       // Set pagebreak options to avoid blank page at the end
       await html2pdf().set(opt).from(pdfContainer).set({
         pagebreak: { mode: ['css', 'legacy'] }
-      }).save();
+      } as any).save();
 
     } catch (error) {
       console.error("Error generating voucher:", error);
